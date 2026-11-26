@@ -1,23 +1,42 @@
 -- ============================================================================
---  ถนนพระเครื่อง — Hub v31  (= v30 + ระบบประเมินแท้/เก๊)
+--  ถนนพระเครื่อง — Hub v31
+--  ★ แก้ "เปอร์เซ็นต์แท้/เก๊ไม่ตรงความจริง" โดยเปลี่ยนจากตัวเลขเดา → มาจากข้อมูลจริง
 --
---  สิ่งที่เพิ่มจาก v30:
---   1) การ์ดพระแต่ละองค์มีปุ่ม "✔ แท้ (n)" / "✖ เก๊ (n)"  ← กดประเมินเองได้ทันที
---      n = จำนวนโหวตที่เคยประเมินไว้ (แยกเป็น 2 ชั้น: ระดับ "พิมพ์" และ "ลาย" ขององค์นั้น)
---   2) จำผลประเมินลงไฟล์ TwoK_v30_rating.json (พิมพ์/ลาย + จำนวนโหวต) → เปิดรอบหน้าใช้ต่อได้
---      ลาย = ซิกเนเจอร์ของ Features ทั้งก้อน (Variant/Proc/ค่าทุก check) จึงจำ "พิมพ์ปลอมตัวนี้" ได้
---   3) analyze() เชื่อผลประเมินของคุณก่อน (เปิด/ปิดได้, ตั้งจำนวนโหวตขั้นต่ำได้ 1-3)
---      - เจอลายเดิม/พิมพ์เดิมที่คุณเคยกดไว้ → ตัดสินตามคุณทันที (ไม่ต้องกดซ้ำ)
---      - ยังแสดงผลตัวตรวจอัตโนมัติเดิมไว้เทียบในบันทึก ("เดิม: เก๊ 96%")
---   4) ตัวเลือก "ประเมินแล้วทำทันที": กด ✔แท้ = ยิง buy, กด ✖เก๊ = ยิง pass ทันที
---   5) เครื่องมือ: 🧠 ดูสถิติการประเมิน • 🗑 ล้างผลประเมิน • 💾 บันทึกเดี๋ยวนี้
+--  ของเดิม (v31) เป็นตัวเลขที่ผมเดาเองทั้งหมด: 98 / 97 / 96 / 95 / 92 %  <- ไม่มีความหมาย
+--  v32 ใช้ 3 ชั้น ซึ่งตรวจย้อนกลับได้เสมอ:
 --
---  ของเดิมทั้งหมดคงอยู่: ตัวกรองซ่อน (⚙) • บันทึก • รายการพระลูกค้า • ระดับพระอ่านจาก
---  Lab.Models[id].Tier (สตริง) • handBack ต้องมี dt • Stage: offer/return/post
+--   ชั้น 1 "ความจริงจากเซิร์ฟเวอร์" → 100%
+--       it.Fake / sp.Fake == true          → เก๊ 100
+--       it.Genuine / sp.Genuine == true    → แท้ 100
+--       it.Result / sp.Result              → แท้/เก๊ 100
+--       it.Faults มีของ                     → เก๊ 100
+--       AmuletLab.FakeRevisionVariants[rev] → เก๊ 100
+--       Features.Proc ~= nil                → เก๊ 100
+--       Features.Variant ~= Models[id].Mesh → เก๊ 100
+--
+--   ชั้น 2 "น้ำหนักหลักฐาน" (ไม่มีความจริงจากเซิร์ฟเวอร์)
+--       totW  = ผลรวม Weight ของ Checks ทั้งหมดของพิมพ์นั้น (ตัวเลขของเกมเอง)
+--       passW = น้ำหนักข้อที่ Features ตรงกับ Checks[].Genuine
+--       failW = น้ำหนักข้อที่ Features ตรงกับ Checks[].Fake
+--       coverage = (passW + failW) / totW
+--       → ตกอย่างน้อย 1 ข้อ  = เก๊,  เปอร์เซ็นต์ = coverage × 100
+--         (ยิ่งตรวจครบทุกข้อ = 100% เพราะกฎเกม: เก๊ = ตกอย่างน้อย 1 ข้อ)
+--       → ไม่ตกข้อไหนเลยและมีข้อผ่าน = แท้, เปอร์เซ็นต์ = coverage × 100
+--         (ข้อที่อ่านค่าไม่ได้จะลด % ลงจริง ไม่ปั้นเลขขึ้นมา)
+--       → ไม่มีข้อมูล Checks เลย = ไม่ตัดสิน (ถือว่า "ไม่มีข้อมูล" ไม่ซื้อ)
+--         ถ้ามี AmuletLab.FakeChance[tier] จะโชว์เป็น "โอกาสเก๊ตามระดับ" พร้อมธง prior
+--
+--   ชั้น 3 "ความแม่นที่วัดได้จริง" (calibration สด ๆ)
+--       ทุกครั้งที่ item มีความจริงจากเซิร์ฟเวอร์ (ชั้น 1) ระบบจะเทียบผลของชั้น 2 กับ
+--       ความจริงนั้น แล้วสะสม ok/total → แสดงบนหัวคอลัมน์ "วัดจริง 134/139 = 96.4%"
+--       + ปุ่ม 📐 ทดสอบด้วย AmuletLab.Generate สุ่มหลายร้อยองค์แล้ววัดความแม่นทันที
+--
+--  ของเดิมคงอยู่ครบ: ระบบประเมิน ✔แท้/✖เก๊ (จำลงไฟล์) • ตัวกรองซ่อน (⚙) • บันทึก •
+--  รายการพระลูกค้า • ระดับจาก Lab.Models[id].Tier (สตริง ไม่ใช่ตัวเลข) • handBack ต้องมี dt
 -- ============================================================================
 if getgenv().TwoK and getgenv().TwoK.Stop then pcall(getgenv().TwoK.Stop) end
 
-do -- ล้าง GUI เก่า (v20–v31)
+do -- ล้าง GUI เก่า (v20–v32)
 	local P0 = game:GetService("Players")
 	local roots = { (gethui and gethui()) or game:GetService("CoreGui") }
 	local pg0 = P0.LocalPlayer:FindFirstChild("PlayerGui")
@@ -38,9 +57,9 @@ local RS = game:GetService("ReplicatedStorage")
 local LP = Players.LocalPlayer
 
 local SR   = RS:FindFirstChild("ShopRemotes")
-local Act  = SR and SR:FindFirstChild("Act")
-local Look = SR and SR:FindFirstChild("Look")
-local Push = SR and SR:FindFirstChild("Push")
+local Act  = SR and SR:FindFirstChild("Act")    -- RemoteFunction
+local Look = SR and SR:FindFirstChild("Look")   -- RemoteEvent
+local Push = SR and SR:FindFirstChild("Push")   -- RemoteEvent (state)
 
 local Lab
 do
@@ -87,15 +106,16 @@ local Hub = {
 	State = nil, PushCount = 0, Items = {}, CurCustomer = nil, CurCustomerIntent = nil,
 	LastAct = 0, LookAt = {},
 	Stat = { Buy = 0, Pass = 0, HandBack = 0, Real = 0, Fake = 0 },
+	Acc = { tot = 0, ok = 0, bad = 0 },   -- ความแม่นที่วัดได้จริง (ชั้น 3)
 	Flags = {
 		Auto = true, MinConf = 90, LookTime = 3.45, CallGap = 0.6, MaxPerCustomer = 3,
 		BuyRealOnly = true, PassFake = true, PassNotWanted = true,
-		AutoHandBack = true, BuyPost = false,
+		AutoHandBack = true, BuyPost = false, NoDataBuy = false,
 		Tiers = { common = false, good = false, rare = false,
 			vrare = true, legend = true, ancient = true },
 		FilterOpen = false, BgTrans = 0.35,
-		-- ระบบประเมิน
 		TrustRating = true, MinVotes = 1, RateActs = false, ShowRating = true,
+		ShowEvidence = true,
 	},
 }
 getgenv().TwoK = Hub
@@ -105,6 +125,13 @@ local function log(msg, col)
 	Hub.Logs[#Hub.Logs + 1] = e
 	if #Hub.Logs > 250 then table.remove(Hub.Logs, 1) end
 	if Hub.OnLog then pcall(Hub.OnLog, e) end
+end
+
+local function countKeys(t)
+	local n = 0
+	if type(t) ~= "table" then return 0 end
+	for _ in next, t do n = n + 1 end
+	return n
 end
 
 local function act(a1, a2)
@@ -157,21 +184,42 @@ local function doAction(action, idx, extra)
 	return ok, msg
 end
 
--- ===========================================================================
---  ระบบประเมิน (Rating) — จำผล "แท้/เก๊" ที่ผู้เล่นกดไว้
---   Rating.models[id]   = { R = โหวตแท้, F = โหวตเก๊ }   (ระดับพิมพ์)
---   Rating.sigs[sig]    = { R, F }                        (ระดับลาย/ซิกเนเจอร์ของ Features)
---   Rating.manual[key]  = { v = "real"/"fake", id, sig }  (รายองค์ของลูกค้าคนนี้)
--- ===========================================================================
-local RATE_FILE = "TwoK_v30_rating.json"
+-- ============================ ระดับพระ (จาก Tier สตริง) ============================
+local function tierOf(id)
+	local key = tostring(id or "?")
+	local m = Models[key]
+	if type(m) ~= "table" then
+		local low = string.lower(key)
+		for mid, mm in next, Models do
+			if string.lower(tostring(mid)) == low then m = mm break end
+		end
+	end
+	if type(m) ~= "table" then
+		return "unknown", "ไม่รู้จักพิมพ์ " .. key, 0
+	end
+	local raw = m.Tier
+	local t
+	if type(raw) == "string" then
+		if TIER_RANK[raw] then t = raw
+		elseif TIER_BY_TH[raw] then t = TIER_BY_TH[raw] end
+	end
+	if not t and type(raw) == "number" then
+		t = TIERS[math.clamp(math.floor(raw), 1, 6)]
+	end
+	if not t then t = TIER_BY_TH[tostring(m.TierName or "")] end
+	if not t then t = TIER_BY_TH[tostring(m.Name or "")] end
+	if not t then
+		local p = string.sub(string.lower(key), 1, 1)
+		t = ({ c = "common", g = "good", r = "rare", v = "vrare",
+			l = "legend", a = "ancient", x = "common" })[p] or "unknown"
+	end
+	return t, tostring(m.TierName or TIER_TH[t] or t), TIER_RANK[t] or 0
+end
+
+-- ================================ ระบบประเมิน (Rating) ================================
+local RATE_FILE = "TwoK_v32_rating.json"
 local Rating = { models = {}, sigs = {}, manual = {}, total = 0 }
 local RATE_DIRTY = false
-
-local function countKeys(t)
-	local n = 0
-	for _ in next, t do n = n + 1 end
-	return n
-end
 
 local function rateKeyOf(cusId, idx)
 	return tostring(cusId or "?") .. ":" .. tostring(idx)
@@ -199,7 +247,6 @@ local function loadRating()
 	end)
 end
 
--- ซิกเนเจอร์ของ "ลาย" = ค่า Features ทุกตัวเรียงตามชื่อ (จำได้ว่าเก๊ลายไหน/พิมพ์ปลอมตัวไหน)
 local function sigOf(sp, id)
 	local ft = type(sp) == "table" and sp.Features
 	if type(ft) ~= "table" then return nil end
@@ -237,7 +284,6 @@ local function deltaVote(id, sig, verdict, d)
 	RATE_DIRTY = true
 end
 
--- คืน: verdict, conf, source, R, F  (nil ถ้ายังไม่มีผล/โหวตไม่ถึงขั้นต่ำ)
 local function voteOf(id, sig)
 	local need = math.max(1, math.floor(tonumber(Hub.Flags.MinVotes) or 1))
 	local function pick(e, src)
@@ -255,26 +301,269 @@ local function voteOf(id, sig)
 	return nil
 end
 
--- กดประเมินรายองค์ (กดซ้ำค่าเดิม = ไม่เปลี่ยนอะไร, กดสลับ = ปรับโหวตให้ถูกต้อง)
 local function setManual(key, id, sig, verdict)
 	local cur = Rating.manual[key]
 	if type(cur) == "table" and cur.v == verdict then return false end
-	if type(cur) == "table" then
-		deltaVote(cur.id, cur.sig, cur.v, -1)
-	end
+	if type(cur) == "table" then deltaVote(cur.id, cur.sig, cur.v, -1) end
 	Rating.manual[key] = { v = verdict, id = tostring(id), sig = sig }
 	deltaVote(id, sig, verdict, 1)
 	return true
 end
 
 local function pruneManual(keepPrefix)
-	local keep, keepN = {}, 0
+	local keep, n = {}, 0
 	for k in next, Rating.manual do
-		if string.sub(k, 1, #keepPrefix) == keepPrefix then keep[k] = true keepN = keepN + 1 end
+		if string.sub(k, 1, #keepPrefix) == keepPrefix then keep[k] = true end
 	end
-	local n = 0
 	for k in next, Rating.manual do
 		if not keep[k] then
+			n = n + 1
+			if n > 120 then Rating.manual[k] = nil end
+		end
+	end
+end
+
+-- ===========================================================================
+--                          ตัวตรวจ v4 — ชั้น 1/2/3
+-- ===========================================================================
+local function weightOf(c)
+	local w = tonumber(c and c.Weight)
+	if w and w > 0 then return w end
+	local r = tonumber(c and c.R)
+	if r and r > 0 then return math.min(3, 0.5 + r) end
+	return 1
+end
+
+-- ชั้น 1: ความจริงที่เซิร์ฟเวอร์/ตัวเกมบอกเอง (ถ้ามี = 100%)
+local function hardTruth(it, sp, md)
+	if it.Fake == true or sp.Fake == true then return false, "เซิร์ฟเวอร์ติดธง Fake" end
+	if it.Genuine == true or sp.Genuine == true then return true, "เซิร์ฟเวอร์ติดธง Genuine" end
+	local r = it.Result
+	if r == nil then r = sp.Result end
+	if r == "fake" or r == false or r == 0 or r == "เก๊" then return false, "Result = เก๊" end
+	if r == "real" or r == "genuine" or r == true or r == 1 or r == "แท้" then
+		return true, "Result = แท้"
+	end
+	local f = it.Faults or sp.Faults
+	if type(f) == "table" and next(f) ~= nil then
+		return false, "มี Faults " .. tostring(countKeys(f)) .. " จุด"
+	end
+	local ft = sp.Features
+	if type(ft) == "table" then
+		local rev = ft.Revision
+		if rev == nil then rev = ft.Rev end
+		local frv = (type(Lab) == "table") and Lab.FakeRevisionVariants or nil
+		if rev ~= nil and type(frv) == "table" and frv[tostring(rev)] == true then
+			return false, "Revision " .. tostring(rev) .. " อยู่ในชุดเก๊ชัวร์"
+		end
+		if ft.Proc ~= nil then return false, "มีตัวบ่งชี้ Proc (ขั้นตอนปลอม)" end
+		if md and md.Mesh and ft.Variant ~= nil and ft.Variant ~= md.Mesh then
+			return false, "Variant ผิดพิมพ์ " .. tostring(ft.Variant) .. " ≠ " .. tostring(md.Mesh)
+		end
+	end
+	return nil
+end
+
+-- ชั้น 2: น้ำหนักหลักฐานจาก Checks[].Weight ของเกมเอง
+local function evidence(sp, md)
+	local ev = { totW = 0, passW = 0, failW = 0, nAll = 0, nPass = 0, nFail = 0, nAbsent = 0,
+		failList = {}, absentList = {} }
+	local checks = md and md.Checks
+	local ft = type(sp) == "table" and sp.Features
+	if type(checks) ~= "table" or type(ft) ~= "table" then return ev end
+	for _, c in ipairs(checks) do
+		local w = weightOf(c)
+		ev.totW = ev.totW + w
+		ev.nAll = ev.nAll + 1
+		local v = ft[c.Key]
+		local verdict = nil
+		if v ~= nil then
+			if c.Genuine ~= nil then
+				if v == c.Genuine then verdict = "pass" else verdict = "fail" end
+			elseif c.Fake ~= nil then
+				if v == c.Fake then verdict = "fail" else verdict = "pass" end
+			end
+		end
+		if verdict == "pass" then
+			ev.passW = ev.passW + w
+			ev.nPass = ev.nPass + 1
+		elseif verdict == "fail" then
+			ev.failW = ev.failW + w
+			ev.nFail = ev.nFail + 1
+			if #ev.failList < 4 then
+				ev.failList[#ev.failList + 1] = tostring(c.Why or c.Text or c.Key)
+			end
+		else
+			ev.nAbsent = ev.nAbsent + 1
+			if #ev.absentList < 6 then ev.absentList[#ev.absentList + 1] = tostring(c.Key) end
+		end
+	end
+	return ev
+end
+
+local function analyze(it, quiet)
+	local sp = (type(it) == "table" and type(it.Spec) == "table") and it.Spec or it
+	local id = (type(sp) == "table" and (sp.Model or sp.id))
+		or (type(it) == "table" and it.Model) or "?"
+	local key = tostring(id)
+	local md = Models[key] or Models[string.lower(key)]
+	local tier, tierName, rank = tierOf(id)
+	local res = {
+		id = key, name = tostring((md and md.Name) or id),
+		tier = tier, tierName = tierName, rank = rank,
+		genuine = false, conf = 0, why = "ไม่มีข้อมูล", src = "none",
+		sig = sigOf(sp, id), ev = nil, auto = nil,
+	}
+
+	local ev = evidence(sp, md)
+	res.ev = ev
+	local evalW = ev.passW + ev.failW
+	local cov = (ev.totW > 0) and (evalW / ev.totW) or 0
+
+	-- ---- ชั้น 2 ----
+	local autoGenuine, autoConf, autoWhy, prior = false, 0, "ไม่มีข้อมูลตรวจ", false
+	if ev.nFail > 0 then
+		autoGenuine = false
+		autoConf = math.floor(100 * cov + 0.5)
+		autoWhy = ("ตก %d ข้อ (%.0f/%.0f น้ำหนัก): %s"):format(
+			ev.nFail, ev.failW, ev.totW, table.concat(ev.failList, ", "))
+	elseif ev.nPass > 0 then
+		autoGenuine = true
+		autoConf = math.floor(100 * cov + 0.5)
+		autoWhy = ("ผ่าน %d/%d ข้อ (น้ำหนัก %.0f/%.0f)"):format(
+			ev.nPass, ev.nAll, ev.passW, ev.totW)
+	else
+		autoGenuine = false
+		local fc = nil
+		if type(Lab) == "table" and type(Lab.FakeChance) == "table" then
+			fc = tonumber(Lab.FakeChance[tier])
+		end
+		if fc then
+			prior = true
+			autoConf = math.floor(100 * fc + 0.5)
+			autoWhy = ("ไม่มีข้อมูลตรวจ • โอกาสเก๊ตามระดับ %.0f%%"):format(fc * 100)
+		else
+			autoConf = 0
+			autoWhy = "ไม่มีข้อมูลตรวจ"
+		end
+	end
+	res.auto = { genuine = autoGenuine, conf = autoConf, why = autoWhy, prior = prior }
+
+	-- ---- ชั้น 1 (ทับผล ถ้ามีความจริง) ----
+	local hv, hwhy = hardTruth(it, sp, md)
+	if hv ~= nil then
+		res.genuine = hv
+		res.conf = 100
+		res.why = hwhy
+		res.src = "server"
+		-- ---- ชั้น 3: วัดความแม่นของชั้น 2 เทียบความจริง ----
+		if not quiet and (ev.nPass + ev.nFail) > 0 then
+			Hub.Acc.tot = Hub.Acc.tot + 1
+			if autoGenuine == hv then Hub.Acc.ok = Hub.Acc.ok + 1
+			else Hub.Acc.bad = Hub.Acc.bad + 1 end
+		end
+	else
+		res.genuine = autoGenuine
+		res.conf = autoConf
+		res.why = autoWhy
+		res.src = prior and "prior" or ((evalW > 0) and "weight" or "none")
+	end
+
+	-- ---- ผลประเมินของผู้ใช้ (ถ้าเปิด) ----
+	if Hub.Flags.TrustRating then
+		local v, c, src, r, f = voteOf(res.id, res.sig)
+		if v then
+			res.genuine = (v == "real")
+			res.conf = c
+			res.src = "user"
+			res.why = ("ประเมินของคุณ [%s แท้%d/เก๊%d] • อัตโนมัติ: %s %d%%"):format(
+				tostring(src), r, f, res.auto.genuine and "แท้" or "เก๊", res.auto.conf)
+			res.rated = true
+			res.rateSrc = src
+		end
+	end
+	return res
+end
+
+local CONF_SRC_TH = { server = "เซิร์ฟเวอร์", weight = "น้ำหนักข้อตรวจ",
+	prior = "โอกาสตามระดับ", user = "ผลประเมิน", none = "ไม่มีข้อมูล" }
+
+local function decide(it, key2, count)
+	local a = analyze(it)
+	if count then
+		if a.genuine then Hub.Stat.Real = Hub.Stat.Real + 1
+		else Hub.Stat.Fake = Hub.Stat.Fake + 1 end
+	end
+	local man = key2 and Rating.manual[key2]
+	if type(man) == "table" then
+		a.manual = true
+		a.genuine = (man.v == "real")
+		a.conf = 100
+		a.why = "คุณกดประเมินเอง: " .. (man.v == "real" and "แท้" or "เก๊")
+		if a.tier ~= "unknown" and not Hub.Flags.Tiers[a.tier] then
+			return false, a, "ระดับไม่รับ (" .. a.tierName .. ")"
+		end
+		return a.genuine, a, a.why
+	end
+	if a.tier == "unknown" then return false, a, "ไม่รู้จักระดับ" end
+	if a.src == "none" or a.src == "prior" then
+		if not Hub.Flags.NoDataBuy then return false, a, "ไม่มีข้อมูลตรวจ (ไม่เดา)" end
+	end
+	if (not a.genuine) and Hub.Flags.PassFake then return false, a, "เก๊" end
+	if a.conf < Hub.Flags.MinConf then return false, a, "มั่นใจต่ำ" end
+	if not Hub.Flags.Tiers[a.tier] then return false, a, "ระดับไม่รับ (" .. a.tierName .. ")" end
+	return true, a, "รับ"
+end
+
+-- ============================ ประมวลผลลูกค้า ============================
+local function processCustomer()
+	if not Hub.Running then return end
+	local st = Hub.State
+	local cus = st and st.Customer
+	if not cus or not cus.Items then
+		Hub.Items = {}
+		if Hub.RenderItems then pcall(Hub.RenderItems) end
+		return
+	end
+	if Hub.CurCustomer == cus.Id then return end
+	Hub.CurCustomer = cus.Id
+	pruneManual(rateKeyOf(cus.Id, ""))
+
+	local items = {}
+	for i, it in next, cus.Items do
+		items[#items + 1] = { idx = i, it = it, key = rateKeyOf(cus.Id, i) }
+	end
+	table.sort(items, function(a, b)
+		return (tonumber(a.idx) or 0) < (tonumber(b.idx) or 0)
+	end)
+	Hub.Items = items
+	Hub.CurCustomerIntent = cus.Intent
+	if Hub.RenderItems then pcall(Hub.RenderItems) end
+	log(("ลูกค้าใหม่ (intent=%s) • %d องค์"):format(tostring(cus.Intent), #items), C_BLUE)
+
+	if not Hub.Flags.Auto then return end
+	task.spawn(function()
+		local bought = 0
+		for _, e in ipairs(items) do
+			if not Hub.Running then break end
+			local stage = string.lower(tostring(e.it.Stage or ""))
+			local okBuy, a, why = decide(e.it, e.key, true)
+			if stage == "return" then
+				if Hub.Flags.AutoHandBack then
+					log(("Stage=return #%s %s → คืนพระ"):format(tostring(e.idx), a.id), C_YEL)
+					doAction("handBack", e.idx)
+				end
+			elseif stage == "post" then
+				if Hub.Flags.BuyPost and okBuy and bought < Hub.Flags.MaxPerCustomer then
+					bought = bought + 1
+					log(("ตรวจ #%s %s %s %s %d%% [%s] → รับโพสต์")
+						:format(tostring(e.idx), a.id, a.tierName,
+							a.genuine and "แท้" or "เก๊", a.conf, CONF_SRC_TH[a.src] or a.src), C_GREEN)
+					doAction("buyPost", e.idx)
+				elseif Hub.Flags.PassNotWanted then
+					doAction("pass", e.idx)
+				end
+			elseif stage = not keep[k] then
 			n = n + 1
 			if n > 120 then Rating.manual[k] = nil end
 		end
