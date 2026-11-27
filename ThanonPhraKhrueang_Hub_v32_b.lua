@@ -33,6 +33,9 @@ do
 end
 
 local MIN_LOOK   = 3.0
+-- ชื่อ action ของปุ่ม "ส่งเครื่อง" ในเกม (ใช้เรียก Act:InvokeServer(kind, ...))
+-- ใส่ชื่อจริงตรงนี้ เช่น local SEND_KIND = "xxx"  ถ้ายังเป็น nil จะแค่บันทึกใน log
+local SEND_KIND  = nil
 local COMMISSION = tonumber(SC.Commission) or 0.1
 
 local COND = {}
@@ -108,8 +111,10 @@ local Hub = {
 		Farm = false, OnlyGenuine = true, AllowUnknown = false, AllowFake = false,
 		MinCond = 60, MinValue = 0, MinProfit = 0,
 		AutoHandBack = true, AutoPost = false, AntiAfk = true, RequireLook = true,
+		ReturnAllFirst = true, SendFallback = true,
 	},
 	LookedAt = {}, LastAct = {}, Fail = {}, Done = {}, Logs = {}, Conns = {}, TierOn = {},
+	Checked = {}, HadReturn = false, SendWarned = false,
 }
 for _, t in ipairs(TIER_LIST) do Hub.TierOn[t.tier] = true end
 getgenv().TwoK = Hub
@@ -125,7 +130,7 @@ local function syncCust(Cu)
 	local cid = tostring(Cu.Id)
 	if Hub.CustId ~= cid then
 		Hub.CustId = cid; Hub.LookedAt = {}; Hub.LastAct = {}
-		Hub.Fail = {}; Hub.Done = {}
+		Hub.Fail = {}; Hub.Done = {}; Hub.Checked = {}; Hub.HadReturn = false
 		log("ลูกค้าใหม่ #" .. cid)
 	end
 end
@@ -215,7 +220,24 @@ local function doAct(kind, i)
 		end
 	end
 	log(string.format("%s #%s → %s (dt %.1f)", kind, tostring(i), tostring(res), dt))
+	return good, res
 end
+
+-- ข้อ 2.1: พระแท้ที่ซื้อไม่ได้ → ส่งเครื่อง
+local function sendMachine(i)
+	if not Hub.Flags.SendFallback then return false end
+	if not SEND_KIND then
+		if not Hub.SendWarned then
+			Hub.SendWarned = true
+			log("ซื้อไม่ได้ → ต้องส่งเครื่อง แต่ยังไม่ได้ตั้ง SEND_KIND ในสคริปต์")
+		end
+		return false
+	end
+	log("ซื้อไม่ได้ #" .. tostring(i) .. " → ส่งเครื่อง")
+	return (doAct(SEND_KIND, i))
+end
+
+local VERDICT_TH = { genuine = "แท้", fake = "เก๊", unknown = "ตรวจไม่ได้" }
 
 if Push then
 	Hub.Conns[#Hub.Conns + 1] = Push.OnClientEvent:Connect(function(a, b)
@@ -237,23 +259,65 @@ task.spawn(function()
 			if type(Cu) ~= "table" then return end
 			local F = Hub.Flags
 			syncCust(Cu)
-			for i, it in ipairs(itemsOf(Cu)) do
+			local items = itemsOf(Cu)
+
+			-- ข้อ 4: นับพระที่ยังต้องคืน
+			local pendingReturn = 0
+			for i, it in ipairs(items) do
+				if tostring(it.Stage or "?") == "return" and not Hub.Done[keyOf(i)] then
+					pendingReturn = pendingReturn + 1
+				end
+			end
+			if pendingReturn > 0 then Hub.HadReturn = true end
+			local holdOffers = F.ReturnAllFirst and F.AutoHandBack and pendingReturn > 0
+
+			for i, it in ipairs(items) do
 				local st = tostring(it.Stage or "?")
 				local k  = keyOf(i)
 				if Hub.Done[k] then
 				elseif st == "offer" then
-					if F.RequireLook and not Hub.LookedAt[k] then
+					if holdOffers then
+						-- รอคืนพระให้ครบก่อน ค่อยตัดสินใจซื้อ/ปฏิเสธ
+					elseif F.RequireLook and not Hub.LookedAt[k] then
 						doLook(i)
 					else
 						local lk = Hub.LookedAt[k]
 						local ready = (not F.RequireLook) or (lk and (os.clock() - lk) >= MIN_LOOK + 0.15)
 						if ready and os.clock() - (Hub.LastAct[k] or 0) > 1.5 then
-							local okf, why = passFilter(analyze(it, i))
-							if okf then doAct("buy", i)
-							else doAct("pass", i); log("ปฏิเสธ #" .. i .. " (" .. why .. ")") end
+							local a = analyze(it, i)
+							-- ข้อ 1: ตรวจแท้/เก๊ (บันทึกครั้งเดียวต่อองค์)
+							if not Hub.Checked[k] then
+								Hub.Checked[k] = true
+								log(string.format("ตรวจ #%d %s → %s%s", i, a.name,
+									VERDICT_TH[a.verdict] or a.verdict, a.why[1] and (" (" .. a.why[1] .. ")") or ""))
+							end
+							local okf, why = passFilter(a)
+							local tag = Hub.HadReturn and "[หลังคืนครบ] " or ""
+							if okf then
+								-- ข้อ 2 / 4.1: ผ่านตัวกรอง → ซื้อ
+								local cash = tonumber(S.Cash)
+								local afford = not (cash and a.ask > cash)
+								local good = false
+								if afford then
+									log(tag .. "ผ่านตัวกรอง → ซื้อ #" .. i)
+									good = doAct("buy", i)
+								else
+									log(string.format("เงินไม่พอ #%d (ขาย %s / มี %s)", i, money(a.ask), money(cash)))
+								end
+								-- ข้อ 2.1: ซื้อไม่ได้ → ส่งเครื่อง
+								if not good then
+									local sent = sendMachine(i)
+									if not sent then Hub.LastAct[k] = os.clock() + 3 end
+								end
+							else
+								-- ข้อ 3 / 4.2: เก๊ หรือไม่ผ่านตัวกรอง → ปฏิเสธ
+								doAct("pass", i)
+								log(tag .. "ปฏิเสธ #" .. i .. " (" .. why .. ")")
+							end
 						end
 					end
 				elseif st == "return" then
+					-- ข้อ 4: คืนพระทั้งหมด
 					if F.AutoHandBack and os.clock() - (Hub.LastAct[k] or 0) > 2 then
 						doAct("handBack", i)
 					end
@@ -309,7 +373,7 @@ fade(head, 0.12)
 new("UICorner", { CornerRadius = UDim.new(0, 10) }, head)
 new("TextLabel", {
 	Size = UDim2.new(0, 150, 1, 0), Position = UDim2.fromOffset(10, 0), BackgroundTransparency = 1,
-	Text = "ถนนพระเครื่อง — Hub v32", Font = Enum.Font.GothamBold, TextSize = 15,
+	Text = "ถนนพระเครื่อง — Hub v33", Font = Enum.Font.GothamBold, TextSize = 15,
 	TextColor3 = COL_TXT, TextXAlignment = Enum.TextXAlignment.Left,
 }, head)
 
@@ -468,331 +532,4 @@ layoutSplit()
 
 local cards = new("ScrollingFrame", {
 	Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
-	ScrollBarThickness = 4, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(),
-}, leftPane)
-new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, cards)
-local emptyLbl = new("TextLabel", {
-	Size = UDim2.new(1, -8, 0, 70), BackgroundTransparency = 1,
-	Text = "รอลูกค้า... (ไปยืนหน้าเคาน์เตอร์)", Font = Enum.Font.Gotham, TextSize = 14,
-	TextColor3 = COL_DIM, TextWrapped = true, LayoutOrder = 0,
-}, cards)
-
-local logHead = new("Frame", {
-	Size = UDim2.new(1, -8, 0, 22), Position = UDim2.fromOffset(4, 2), BackgroundTransparency = 1,
-}, rightPane)
-new("TextLabel", {
-	Size = UDim2.new(1, -70, 1, 0), BackgroundTransparency = 1,
-	Text = "บันทึกผลการกระทำ", Font = Enum.Font.GothamBold, TextSize = 12,
-	TextColor3 = COL_DIM, TextXAlignment = Enum.TextXAlignment.Left,
-}, logHead)
-local refreshBtn = mkBtn(logHead, "รีเฟรช", 62, COL_BLUE, nil, 20)
-refreshBtn.Position = UDim2.new(1, -62, 0, 1)
-
-local logScroll = new("ScrollingFrame", {
-	Size = UDim2.new(1, -8, 1, -28), Position = UDim2.fromOffset(4, 26),
-	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
-	AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(),
-}, rightPane)
-local logLbl = new("TextLabel", {
-	Size = UDim2.new(1, -6, 0, 0), BackgroundTransparency = 1, Font = Enum.Font.Code,
-	TextSize = 11, TextColor3 = COL_DIM, TextXAlignment = Enum.TextXAlignment.Left,
-	TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
-	AutomaticSize = Enum.AutomaticSize.Y, Text = "",
-}, logScroll)
-
-local function mkCard(order, it, a)
-	local vt, vc, vb = "ตรวจไม่ได้", COL_YEL, COL_BAD
-	if a.verdict == "genuine" then vt, vc, vb = "แท้", COL_GREEN, COL_OK
-	elseif a.verdict == "fake" then vt, vc, vb = "เก๊", COL_RED, COL_BAD end
-
-	local card = new("Frame", {
-		Size = UDim2.new(1, -8, 0, 78), BackgroundColor3 = COL_PANEL, BackgroundTransparency = 0.18,
-		BorderSizePixel = 0, LayoutOrder = order,
-	}, cards)
-	fade(card, 0.18)
-	new("UICorner", { CornerRadius = UDim.new(0, 8) }, card)
-	new("UIStroke", { Color = vb, Transparency = 0.15, Thickness = 1.2 }, card)
-
-	new("TextLabel", {
-		Size = UDim2.new(1, -186, 0, 18), Position = UDim2.fromOffset(8, 3), BackgroundTransparency = 1,
-		Text = string.format("#%d %s (%s)", a.i, a.name, a.tierName),
-		Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = TIER_COL[a.tier] or COL_TXT,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-	}, card)
-	new("TextLabel", {
-		Size = UDim2.new(1, -186, 0, 16), Position = UDim2.fromOffset(8, 21), BackgroundTransparency = 1,
-		Text = string.format("สภาพ %s/100 · %s · ×%.2f · มูลค่า %s · กำไร %s",
-			a.cond and string.format("%d", math.floor(a.cond)) or "-",
-			a.grade, a.mult or 1, money(a.value), money(a.profit)),
-		Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = COL_TXT,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-	}, card)
-	new("TextLabel", {
-		Size = UDim2.new(1, -186, 0, 16), Position = UDim2.fromOffset(8, 39), BackgroundTransparency = 1,
-		Text = "ขาย " .. money(a.ask) .. " · " .. a.stage .. (a.why[1] and (" · " .. table.concat(a.why, " · ")) or ""),
-		Font = Enum.Font.Gotham, TextSize = 11,
-		TextColor3 = (a.verdict == "fake") and COL_RED or COL_DIM,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-	}, card)
-
-	local badge = new("TextLabel", {
-		Size = UDim2.fromOffset(64, 20), Position = UDim2.new(1, -72, 0, 4),
-		BackgroundColor3 = vb, BackgroundTransparency = 0.12, BorderSizePixel = 0,
-		Text = vt, Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = vc,
-	}, card)
-	new("UICorner", { CornerRadius = UDim.new(0, 5) }, badge)
-
-	if a.demo then
-		new("TextLabel", {
-			Size = UDim2.new(0, 160, 0, 22), Position = UDim2.new(1, -168, 0, 46),
-			BackgroundTransparency = 1, Text = "ตัวอย่าง (ไม่ใช่ของจริง)",
-			Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = COL_DIM,
-		}, card)
-	else
-		local row = new("Frame", {
-			Size = UDim2.new(0, 164, 0, 24), Position = UDim2.new(1, -172, 0, 48),
-			BackgroundTransparency = 1,
-		}, card)
-		new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4) }, row)
-		local idx = a.i
-		mkBtn(row, "ส่อง", 34, COL_BTN, function() syncCust(Hub.State and Hub.State.Customer); doLook(idx) end, 24)
-		mkBtn(row, "ซื้อ", 34, COL_OK, function() syncCust(Hub.State and Hub.State.Customer); doAct("buy", idx) end, 24)
-		mkBtn(row, "ปฏิเสธ", 46, COL_BAD, function() syncCust(Hub.State and Hub.State.Customer); doAct("pass", idx) end, 24)
-		mkBtn(row, "คืน", 34, COL_BLUE, function() syncCust(Hub.State and Hub.State.Customer); doAct("handBack", idx) end, 24)
-	end
-	return card
-end
-
--- ── หน้า 2: กรอง ───────────────────────────────────────────────────────────
-local p2 = pages[2]
-local tierBox = new("Frame", { Size = UDim2.new(1, -4, 0, 30), BackgroundTransparency = 1 }, p2)
-new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4) }, tierBox)
-for _, tl in ipairs(TIER_LIST) do
-	local t = tl.tier
-	local c = new("TextButton", {
-		Size = UDim2.fromOffset(104, 26), BackgroundColor3 = COL_BTN, BackgroundTransparency = 0.05,
-		BorderSizePixel = 0, Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = COL_DIM,
-	}, tierBox)
-	new("UICorner", { CornerRadius = UDim.new(0, 6) }, c)
-	fade(c, 0.05)
-	local function paint()
-		local on = Hub.TierOn[t] ~= false
-		c.Text = (on and "✓ " or "✕ ") .. (TIER_NAME[t] or t) .. " " .. tostring(TIER_COUNT[t] or 0)
-		c.BackgroundColor3 = on and (TIER_COL[t] or COL_OK) or COL_BTN
-		c.TextColor3 = on and Color3.fromRGB(20, 22, 30) or COL_DIM
-	end
-	c.MouseButton1Click:Connect(function()
-		Hub.TierOn[t] = not (Hub.TierOn[t] ~= false)
-		paint(); lastSig = "!"
-	end)
-	paint()
-end
-
-local fgrid = new("ScrollingFrame", {
-	Size = UDim2.new(1, -4, 1, -36), Position = UDim2.fromOffset(0, 34),
-	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
-	AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(),
-}, p2)
-new("UIGridLayout", {
-	CellSize = UDim2.fromOffset(216, 44), CellPadding = UDim2.fromOffset(6, 0),
-	SortOrder = Enum.SortOrder.LayoutOrder,
-}, fgrid)
-
-local function mkToggle(par, text, key, order)
-	local b = new("TextButton", {
-		Size = UDim2.new(0, 210, 0, 28), BackgroundColor3 = COL_BTN, BackgroundTransparency = 0.1,
-		BorderSizePixel = 0, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = COL_TXT,
-		TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = order or 0,
-	}, par)
-	new("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
-	fade(b, 0.1)
-	local function paint()
-		local on = Hub.Flags[key]
-		b.Text = (on and "  ✓ " or "  ✕ ") .. text
-		b.BackgroundColor3 = on and COL_OK or COL_BTN
-	end
-	b.MouseButton1Click:Connect(function() Hub.Flags[key] = not Hub.Flags[key]; paint(); lastSig = "!" end)
-	paint()
-	return b
-end
-
-local function mkSlider(par, label, minv, maxv, step, def, order, fmt, cb)
-	local row = new("Frame", { Size = UDim2.new(0, 216, 0, 44), BackgroundTransparency = 1, LayoutOrder = order }, par)
-	local lbl = new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-		TextSize = 12, TextColor3 = COL_TXT, TextXAlignment = Enum.TextXAlignment.Left,
-	}, row)
-	local track = new("Frame", {
-		Size = UDim2.new(1, -8, 0, 10), Position = UDim2.fromOffset(0, 22),
-		BackgroundColor3 = Color3.fromRGB(60, 68, 90), BackgroundTransparency = 0.15, BorderSizePixel = 0,
-	}, row)
-	new("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
-	fade(track, 0.15)
-	local fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = COL_GREEN, BorderSizePixel = 0 }, track)
-	new("UICorner", { CornerRadius = UDim.new(1, 0) }, fill)
-	local function set(v)
-		v = math.clamp(v, minv, maxv)
-		fill.Size = UDim2.fromScale((v - minv) / math.max(1e-6, maxv - minv), 1)
-		lbl.Text = string.format("%s: %s", label, (fmt or tostring)(v))
-		if cb then cb(v) end
-	end
-	local drag = false
-	local function fromX(x)
-		local ap, as = track.AbsolutePosition.X, math.max(1, track.AbsoluteSize.X)
-		local t = math.clamp((x - ap) / as, 0, 1)
-		local v = minv + (maxv - minv) * t
-		if step and step > 0 then v = math.floor(v / step + 0.5) * step end
-		set(v)
-	end
-	track.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			drag = true; fromX(i.Position.X)
-		end
-	end)
-	Hub.Conns[#Hub.Conns + 1] = UIS.InputChanged:Connect(function(i)
-		if drag and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-			fromX(i.Position.X)
-		end
-	end)
-	Hub.Conns[#Hub.Conns + 1] = UIS.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then drag = false end
-	end)
-	set(def)
-	return row
-end
-
-mkToggle(fgrid, "ซื้อเฉพาะพระแท้",       "OnlyGenuine",   1)
-mkToggle(fgrid, "รับพระตรวจไม่ได้",       "AllowUnknown",  2)
-mkToggle(fgrid, "รับพระเก๊ (ไม่แนะนำ)",   "AllowFake",     3)
-mkToggle(fgrid, "คืนพระอัตโนมัติ",        "AutoHandBack",  4)
-mkToggle(fgrid, "รับ post อัตโนมัติ",     "AutoPost",      5)
-mkToggle(fgrid, "ส่องก่อนซื้อ (3 วิ)",    "RequireLook",   6)
-mkToggle(fgrid, "กันหลุดอัตโนมัติ",       "AntiAfk",       7)
-mkSlider(fgrid, "สภาพขั้นต่ำ", 0, 100, 1, 60, 8, function(v) return string.format("%d", v) end,
-	function(v) Hub.Flags.MinCond = v; lastSig = "!" end)
-mkSlider(fgrid, "มูลค่าขั้นต่ำ", 0, 300000, 1000, 0, 9, money,
-	function(v) Hub.Flags.MinValue = v; lastSig = "!" end)
-mkSlider(fgrid, "กำไรขั้นต่ำ", -100000, 300000, 1000, 0, 10, money,
-	function(v) Hub.Flags.MinProfit = v; lastSig = "!" end)
-
--- ── หน้า 3: ดีไซน์ ─────────────────────────────────────────────────────────
-local d4 = new("ScrollingFrame", {
-	Size = UDim2.new(1, -4, 1, -4), BackgroundTransparency = 1, BorderSizePixel = 0,
-	ScrollBarThickness = 4, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(),
-}, pages[3])
-new("UIListLayout", { Padding = UDim.new(0, 6) }, d4)
-local function applyAlpha(a)
-	for _, f in ipairs(fadeList) do
-		pcall(function() f.inst.BackgroundTransparency = math.clamp(f.base + a, 0, 0.95) end)
-	end
-end
-mkSlider(d4, "ความโปร่งใส (ตัวหนังสือยังทึบ)", 0, 0.9, 0.01, 0.25, 1,
-	function(v) return string.format("%d%%", math.floor(v * 100 + 0.5)) end, applyAlpha)
-local qr = new("Frame", { Size = UDim2.new(1, -8, 0, 30), BackgroundTransparency = 1, LayoutOrder = 2 }, d4)
-new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6) }, qr)
-mkBtn(qr, "ทึบ", 62, COL_BTN, function() applyAlpha(0.02) end, 26)
-mkBtn(qr, "กึ่ง", 62, COL_BTN, function() applyAlpha(0.45) end, 26)
-mkBtn(qr, "ใส",  62, COL_BTN, function() applyAlpha(0.85) end, 26)
-mkBtn(qr, "ทดสอบการ์ด", 96, COL_BLUE, function()
-	Hub.Demo = not Hub.Demo; lastSig = "!"
-	log("ตัวอย่างการ์ด " .. tostring(Hub.Demo))
-end, 26)
-
-local status = new("TextLabel", {
-	Size = UDim2.new(1, -14, 0, 22), Position = UDim2.new(0, 6, 1, -26), BackgroundTransparency = 1,
-	Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = COL_DIM,
-	TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-}, body)
-
-local demoIds = {}
-for id in pairs(Models) do demoIds[#demoIds + 1] = id end
-table.sort(demoIds)
-local DEMO1, DEMO2
-do
-	local id1, id2 = demoIds[1], demoIds[2]
-	if id1 and Models[id1] then
-		DEMO1 = { demo = true, Stage = "offer", Ask = 1500,
-			Spec = { Model = id1, Condition = 97, Features = { Variant = Models[id1].Mesh } } }
-	end
-	if id2 and Models[id2] then
-		DEMO2 = { demo = true, Stage = "offer", Ask = 800,
-			Spec = { Model = id2, Condition = 42, Features = { Variant = "R1_F1", Proc = "pores" } } }
-	end
-end
-
-local lastLogN, lastSplitW = -1, -1
-local function render()
-	local S  = Hub.State
-	local Cu = (type(S) == "table") and S.Customer or nil
-	if Cu then syncCust(Cu) end
-	local items = itemsOf(Cu)
-	local sig = (Hub.Demo and "D" or "") .. tostring(Cu and Cu.Id)
-	for i, it in ipairs(items) do
-		local sp = specOf(it)
-		sig = sig .. string.format("|%d:%s:%s:%s:%s:%s", i, tostring(it.Stage), tostring(sp.Model),
-			tostring(sp.Condition), tostring(sp.Features and sp.Features.Variant), tostring(sp.Features and sp.Features.Proc))
-	end
-	if sig ~= lastSig then
-		lastSig = sig
-		for _, c in ipairs(cards:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
-		local n = 0
-		for i, it in ipairs(items) do n = n + 1; mkCard(n, it, analyze(it, i)) end
-		if Hub.Demo then
-			if DEMO1 then n = n + 1; mkCard(n, DEMO1, analyze(DEMO1, n)) end
-			if DEMO2 then n = n + 1; mkCard(n, DEMO2, analyze(DEMO2, n)) end
-		end
-		emptyLbl.Visible = (n == 0)
-	end
-	if status then
-		local age = os.clock() - Hub.StateAt
-		if type(S) ~= "table" then
-			status.Text = "ยังไม่ได้รับข้อมูลจากเกม (รอ Push)"
-		elseif type(Cu) == "table" then
-			status.Text = string.format("ลูกค้า #%s · %d องค์ · วัน %s · เงิน %s · push %.1fs",
-				tostring(Cu.Id), #items, tostring(S.Day or "-"), money(tonumber(S.Cash) or 0), age)
-		else
-			status.Text = string.format("รอลูกค้า ~%.0fs · วัน %s · เงิน %s · push %.1fs",
-				math.max(0, tonumber(S.CustomerGap) or 0), tostring(S.Day or "-"),
-				money(tonumber(S.Cash) or 0), age)
-		end
-	end
-	if logLbl and #Hub.Logs ~= lastLogN then
-		lastLogN = #Hub.Logs
-		logLbl.Text = table.concat(Hub.Logs, "\n")
-		task.defer(function()
-			pcall(function()
-				logScroll.CanvasPosition = Vector2.new(0, math.max(0, logLbl.AbsoluteSize.Y - logScroll.AbsoluteSize.Y))
-			end)
-		end)
-	end
-	local w = split.AbsoluteSize.X
-	if w ~= lastSplitW then lastSplitW = w; layoutSplit() end
-end
-
-manualRefresh = function()
-	lastSig = "!"
-	lastLogN = -1
-	log("รีเฟรชแมนนวล")
-	pcall(render)
-end
-refreshBtn.MouseButton1Click:Connect(manualRefresh)
-
-showTab(1)
-applyAlpha(0.25)
-
-function Hub.Stop()
-	Hub.Running = false
-	for _, c in ipairs(Hub.Conns) do pcall(function() c:Disconnect() end) end
-	pcall(function() gui:Destroy() end)
-	if getgenv().TwoK == Hub then getgenv().TwoK = nil end
-end
-
-log("Hub v56 พร้อม · " .. #TIER_LIST .. " ระดับ · Models " .. (function() local n=0 for _ in pairs(Models) do n=n+1 end return n end)())
-task.spawn(function()
-	while Hub.Running do
-		pcall(render)
-		task.wait(0.3)
-	end
-end)
-render()
-print("v56 loaded")
+	ScrollBarThickness = 4, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize =
